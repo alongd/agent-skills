@@ -54,7 +54,21 @@ in `arc_env` / `make` in `rmg_env`); apply the **uncommitted** `arc/scheduler.py
 `time.sleep(30)`→`time.sleep(180)`; confirm **zeus is defined in `~/.arc/settings.py` and reachable**
 (`ssh -o BatchMode=yes -o ConnectTimeout=15 alon@zeus.technion.ac.il 'echo ok'`); verify envs.
 
-## Phase B — launch + babysitting loop (~30–60 min)
+## Running unattended — supervisor poll-loop (keeps context low)
+Prefer running under the bundled **`arc_babysitter.sh`** supervisor rather than one long session. It
+is the mother process: it spawns a **fresh headless `claude -p` per pass** (`--dangerously-skip-
+permissions`), sleeps ~30 min between passes, and exits when the pool is `DONE` or `PAUSED`. A fresh
+process each pass means **context never grows — no `/compact` or handoff is ever needed** (the agent
+can't self-`/compact` or self-respawn anyway; the supervisor owns the lifecycle). Manual launch in
+tmux: `tmux new -s arc 'bash ~/.claude/skills/babysit-arc/arc_babysitter.sh'`; relaunch the same line
+after a reboot (manual tmux does not auto-restart — the first pass rebuilds from `STATUS.md`).
+
+**Per-pass contract (when supervised):** do **exactly one** babysitting pass, then **stop** — don't
+stay resident or sleep. End each pass by writing one word to `~/Projects/.arc_babysitter.state`:
+`DONE` (whole pool terminal **and** teardown done), `PAUSED` (a blocker — also `slack-ask`), or
+`RUNNING`. Sequential passes preserve the single-orchestrator / one-pool invariant automatically.
+
+## Phase B — launch + babysitting (per pass)
 Launch one **detached** ARC process per instance from its dir (`setsid python ~/Code/ARC/ARC.py
 input.yml &`), record PID+time in `STATUS.md`; **single orchestrator / one pool** across campaigns;
 **autodetect** batch size from host (`nproc`, `free -g`) and the zeus queue (`qstat -u $USER` vs
@@ -77,6 +91,16 @@ stalls the pool).
     speculation.** Put OL/zeus-environment issues in `Code/ARC/ARC on OL — Zeus Troubleshooting &
     Knowledge.md` (its newest-at-top log) and general ARC/RMG code/failure-mode learnings in
     `knowledge/wiki/Running ARC On Zeus.md` (§4–5 bug catalog). This vault update is silent (no Slack).
+
+## Issues ledger (`ISSUES.md`, per project) — human follow-up
+The per-project **`ISSUES.md`** is the human punch-list for after the run, distinct from `STATUS.md`
+(live job ledger) and `FIXES.md` (code-fix log), and **finer-grained** (one instance may be fine yet
+have a single unconverged species or a TS ARC couldn't locate). **Never silently drop a failure:**
+whenever you park a problem rather than solve it — an **unconverged species**, a **TS not found**, a
+`blocked`/`crashed` instance, or a **scientifically questionable result** — add a row (item · type ·
+what happened/what was tried · suggested human action · `arc.log`/job-dir pointer). At completion,
+finalize the **wins** summary (accepted k(T)/k∞/thermo) + counts. This is what the user works from
+afterward; keeping it current is **silent** (no Slack).
 
 ## Success criteria — scientific correctness is the bar
 Mark an instance `processed` only when the result exists **and** is scientifically sane (per the
@@ -123,4 +147,4 @@ only — do not spam the channel.
 
 ## Related
 Vault: `[[ARC Campaign Runbook]]` · `[[Running ARC On Zeus]]` · `ARC on OL — Zeus Troubleshooting`.
-Slack: `slack-ask`, `slack-notify`.
+Slack: `slack-ask`, `slack-notify`. Bundled: `arc_babysitter.sh` (supervisor poll-loop).
