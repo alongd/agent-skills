@@ -7,12 +7,29 @@ Quick reference for **how to invoke** the skill. Depth lives in `SKILL.md` and t
 There are two ways to run, depending on whether you want to babysit it yourself or leave it unattended:
 
 1. **Unattended (recommended)** — start the supervisor; it runs fresh one-pass Claude sessions on a
-   loop so context never grows:
+   loop so context never grows. Two ways:
+   - **Reboot-resilient (best for multi-day runs)** — the bundled systemd *user* unit auto-starts on
+     boot and rebuilds from `STATUS.md`:
+     ```bash
+     mkdir -p ~/.config/systemd/user
+     cp ~/.claude/skills/babysit-arc/arc-babysitter.service ~/.config/systemd/user/
+     loginctl enable-linger "$USER"          # run without an active login (survives logout/reboot)
+     systemctl --user daemon-reload && systemctl --user enable --now arc-babysitter
+     journalctl --user -u arc-babysitter -f  # or: tail -f ~/Projects/arc_babysitter.log
+     ```
+   - **Manual tmux** — simplest, but does **not** auto-restart after a reboot (relaunch the same line):
+     ```bash
+     tmux new -s arc 'bash ~/.claude/skills/babysit-arc/arc_babysitter.sh'
+     # detach: Ctrl-b d   ·   reattach: tmux attach -t arc   ·   watch: tail -f ~/Projects/arc_babysitter.log
+     ```
+   A single-orchestrator **lockfile** (`~/Projects/.arc_babysitter.lock`) stops a second copy from
+   starting and double-booking zeus.
+
+   **If it pauses on a blocker:** the supervisor stays resident and Slack-notifies you (it does *not*
+   exit). Fix the cause, then resume with:
    ```bash
-   tmux new -s arc 'bash ~/.claude/skills/babysit-arc/arc_babysitter.sh'
-   # detach: Ctrl-b d   ·   reattach: tmux attach -t arc   ·   watch: tail -f ~/Projects/arc_babysitter.log
+   echo RUNNING > ~/Projects/.arc_babysitter.state
    ```
-   Relaunch the same line after a reboot — it rebuilds state from `STATUS.md`.
 
 2. **Interactive (one session)** — just tell Claude what to do; the skill auto-activates on any
    "run/babysit ARC", "ARC on OL/zeus", or "compute k(T)/thermo" request. Canonical prompt:
@@ -49,14 +66,24 @@ a real blocker, a proposed scientific deviation, or when the pool finishes — o
 - **Autonomous:** applies the runbook's defaults, logs every action as a timestamped line in
   `STATUS.md`, auto-fixes known crashes (bounded retries) and restarts; never asks about routine
   choices.
-- **Asks (Slack `slack-ask`) only** for a true blocker (e.g. can't reach zeus) or a proposed LOT/method
-  deviation; **notifies (`slack-notify`) once** when the whole pool finishes.
+- **Slack only when it needs you:** a true blocker (e.g. can't reach zeus, near the zeus disk quota) or
+  a proposed LOT/method deviation — interactive mode `slack-ask`s and waits; supervised mode
+  `slack-notify`s + pauses. **Notifies once** when the pool finishes (pointer to `REPORT.md`), plus an
+  optional **once/day liveness** line on multi-day runs.
 - **Scientific correctness is the bar** — never marks a result `processed` unless it's sane.
 
 ## Files it maintains (per project)
-`STATUS.md` (live job ledger / resume source) · `ISSUES.md` (human follow-up punch-list) ·
-`FIXES.md` (code-fix log, unstaged) · the consolidated RMG libraries · and validated learnings merged
-back into the vault.
+- **`REPORT.md`** — the **single clean human deliverable** to read when a run finishes/pauses: wins,
+  what didn't converge + why + recommendation, code fixes applied (with a `git diff --stat` snapshot),
+  deviations, next actions. The completion Slack ping points here.
+- `STATUS.md` (live job ledger / resume source) · `ISSUES.md` (human follow-up punch-list) ·
+  `FIXES.md` (code-fix log) — **working files**.
+- The consolidated RMG libraries · and validated learnings merged back into the vault.
+
+**Reviewing the code fixes it applied:** the babysitter freely applies bug fixes to `~/Code/ARC`
+(and RMG-Py) to unblock the pool but **never commits** them. After several runs, inspect everything it
+changed with `git -C ~/Code/ARC diff` (cross-referenced line-by-line in each `FIXES.md`) and decide
+what to commit/push yourself.
 
 ## See also
 `SKILL.md` (full process) · `arc_babysitter.sh` (the supervisor) · vault `ARC Campaign Runbook` /

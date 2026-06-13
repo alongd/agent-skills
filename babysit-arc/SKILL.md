@@ -39,13 +39,28 @@ and **prune only net / well-skipping** reactions (keep every elementary reaction
 partition into instances, write one `input.yml` per folder via the project's `gen_arc_inputs.py`, then
 (re)generate `INDEX.md`/`STATUS.md` rows.
 
-**Validate every `input.yml` against the ARC API before launch** (catches bad job-type keys, malformed
-LOT, unresolved species early; runnable on **any** machine with ARC importable — even before copying to
-OL). Construct the object, do **not** `execute()`:
+**TS-adapter family gate (set expectations before burning compute)** — from the OL troubleshooting
+note's adapter findings: **`R_Recombination` reactions are barrierless (no saddle-point TS), so ARC
+cannot compute them** → **quietly exclude them during generation (no Slack)** and **list each one in the
+artifact** (`REPORT.md`/`ISSUES.md`) with the clear reason — *"barrierless bond fission, no TS for ARC
+to locate."* Reactions handled by the **`linear`** adapter (R_Addition / Intra_R_Add / 1,2_Insertion)
+have a **low TS-guess success rate** (no guesses, sub-threshold imaginary freq, 2nd-order saddles,
+non-converging opt, CPU-spin hangs) → flag them in `STATUS.md`, **validate one early** before fanning
+out, and don't expect the `heuristics`-grade hit rate H_Abstraction enjoys.
+
+**Validate every `input.yml` by loading an ARC object — before launching ANY instance** (catches bad
+job-type keys, malformed LOT, unresolved species, bad family early; runnable on **any** machine with
+ARC importable — even before copying to OL). Mirror exactly what `ARC.py` does *before* `.execute()`:
+read the input with ARC's own `read_yaml_file` (adjacency-list + `project_directory` preprocessing
+plain `yaml.safe_load` misses), construct `ARC(**input_dict)`, and **never call `execute()`**.
+Constructing the object runs all of ARC's input parsing/validation (species resolution,
+`determine_family`, LOT lookup) and submits **no jobs**. (ARC has **no `from_dict()` classmethod** —
+the `ARC(**input_dict)` constructor *is* the from-dict path.)
 ```bash
-conda run -n arc_env python -c "import sys,yaml; from arc import ARC; ARC(**yaml.safe_load(open(sys.argv[1]))); print('OK', sys.argv[1])" <instance>/input.yml
+conda run -n arc_env python -c "import sys; from arc.common import read_yaml_file; from arc.main import ARC; ARC(**read_yaml_file(path=sys.argv[1], project_directory='.')); print('OK', sys.argv[1])" <instance>/input.yml
 ```
-A failed load → fix the input; **never launch a broken instance.**
+A failed load → fix the input; **never launch a broken instance.** Re-run this check on **every newly
+generated deviation sibling folder** (`…b`/`…c`) before launching it, not just the originals.
 
 ## Phase B — pre-flight (once per session)
 Per the runbook + troubleshooting note (don't inline the configs here): correct **branches** on the
@@ -57,24 +72,62 @@ in `arc_env` / `make` in `rmg_env`); apply the **uncommitted** `arc/scheduler.py
 ## Running unattended — supervisor poll-loop (keeps context low)
 Prefer running under the bundled **`arc_babysitter.sh`** supervisor rather than one long session. It
 is the mother process: it spawns a **fresh headless `claude -p` per pass** (`--dangerously-skip-
-permissions`), sleeps ~30 min between passes, and exits when the pool is `DONE` or `PAUSED`. A fresh
-process each pass means **context never grows — no `/compact` or handoff is ever needed** (the agent
-can't self-`/compact` or self-respawn anyway; the supervisor owns the lifecycle). Manual launch in
-tmux: `tmux new -s arc 'bash ~/.claude/skills/babysit-arc/arc_babysitter.sh'`; relaunch the same line
-after a reboot (manual tmux does not auto-restart — the first pass rebuilds from `STATUS.md`).
+permissions`), sleeps ~30 min between passes, exits when the pool is `DONE`, and on `PAUSED` **stays
+resident slow-polling the state file** until you resolve the blocker and flip it back to `RUNNING`
+(it does **not** exit on a blocker anymore). A fresh process each pass means **context never grows — no
+`/compact` or handoff is ever needed** (the agent can't self-`/compact` or self-respawn anyway; the
+supervisor owns the lifecycle). It also takes a **single-orchestrator lockfile**
+(`~/Projects/.arc_babysitter.lock`) so a second copy can't start and double-book zeus.
+
+**Launch options:**
+- **Reboot-resilient (recommended for multi-day runs):** the bundled **`arc-babysitter.service`**
+  systemd *user* unit auto-starts the supervisor on boot, rebuilding from `STATUS.md`
+  (`systemctl --user enable --now arc-babysitter`; needs `loginctl enable-linger alon`). See USAGE.md.
+- **Manual tmux:** `tmux new -s arc 'bash ~/.claude/skills/babysit-arc/arc_babysitter.sh'`; relaunch
+  the same line after a reboot (manual tmux does **not** auto-restart — the first pass rebuilds state).
+
+**Resume after a blocker:** fix the cause, then `echo RUNNING > ~/Projects/.arc_babysitter.state` — the
+resident supervisor picks it up and runs the next pass (which re-evaluates; if still blocked it
+re-`PAUSED`s).
 
 **Per-pass contract (when supervised):** do **exactly one** babysitting pass, then **stop** — don't
 stay resident or sleep. End each pass by writing one word to `~/Projects/.arc_babysitter.state`:
-`DONE` (whole pool terminal **and** teardown done), `PAUSED` (a blocker — also `slack-ask`), or
-`RUNNING`. Sequential passes preserve the single-orchestrator / one-pool invariant automatically.
+`DONE` (whole pool terminal **and** teardown done), `PAUSED` (a blocker — also `slack-notify` and
+record it in `STATUS.md`; do **not** block on `slack-ask`), or `RUNNING`. Sequential passes preserve
+the single-orchestrator / one-pool invariant automatically.
 
 ## Phase B — launch + babysitting (per pass)
 Launch one **detached** ARC process per instance from its dir (`setsid python ~/Code/ARC/ARC.py
-input.yml &`), record PID+time in `STATUS.md`; **single orchestrator / one pool** across campaigns;
-**autodetect** batch size from host (`nproc`, `free -g`) and the zeus queue (`qstat -u $USER` vs
-`max_simultaneous_jobs`). Each pass, for every `running` instance check health (PID alive, `arc.log`
-advancing, jobs cycling opt→freq→scan→sp, `restart.yml` updating, zeus jobs not stuck `Q`) and append
-a **timestamped heartbeat** line to `STATUS.md`.
+input.yml &`), record PID+time in `STATUS.md`; **single orchestrator / one pool** across campaigns.
+**Batch size is bounded by the SSH budget, not just host resources:** autodetect from host (`nproc`,
+`free -g`, ~1–2 GB/Arkane) and the zeus queue (`qstat -u $USER` vs `max_simultaneous_jobs`), **then cap
+so ARC's own polling stays under budget** — each running ARC process spends ~20 SSH/h at the 180 s poll,
+so ~2–3 concurrent ARC processes already consume the < ~60 SSH/h ceiling (leaving room for babysitter
+checks). The heavy compute is on zeus; more local processes add queue/SSH pressure, not throughput.
+
+Each pass, for every `running` instance check health (PID alive, `arc.log` advancing, jobs cycling
+opt→freq→scan→sp, `restart.yml` updating, zeus jobs not stuck `Q`) and append a **timestamped
+heartbeat** line to `STATUS.md`. **Respect the zeus SSH budget strictly** (vault: Running ARC On Zeus
+§0b — a spamming account gets banned, killing all future projects): all per-pass zeus checks in **one
+batched connection** (`ssh zeus 'qstat -u $USER; quota -s'`, ≤ 4 SSH ops/pass), one `qstat -u $USER`
+for all instances, < ~60 SSH/h combined incl. ARC's own polling; back off ≥ 5 min on SSH failures,
+never tight-loop.
+
+**Zeus home-quota guard (a known pool-killer — check every pass, free in the batched connection).**
+zeus home is quota-capped (soft/hard, e.g. 300/330 GB) and ARC outputs grow ~1.8 GB/hr, so a long
+campaign steadily re-approaches the cap; crossing the **hard** limit makes *every* instance's SFTP
+write fail at once → simultaneous pool-wide `OSError: [Errno 28] No space left` (even on local writes —
+don't be fooled, OL disk is fine). From the batched `quota -s`: **over soft → warn in `STATUS.md` and
+lower `max_simultaneous_jobs` / hold new launches**; **near hard → pause launches and `slack-ask`/
+`slack-notify`** (free zeus home space or request a bump — the durable fix). No work is lost: every
+`restart.yml` lives on OL.
+
+**Stalled-but-alive escalation (not every wedge is a crash).** A live PID with **no `arc.log` /
+`restart.yml` advance** is *unhealthy* even without a traceback (e.g. the `linear`/BDE conformer
+CPU-spin hang — hours stuck on a tiny fragment, or a job re-submitted in a loop). If an instance shows
+no progress for **> ~3 h** (and zeus jobs aren't merely queued), **kill+restart it** (resumes from
+`restart.yml`; counts against the retry budget); on exhausting the budget mark `blocked`/`crashed`,
+record the signature in `ISSUES.md`, and continue with the pool.
 
 **Crash → fix → restart:** match the traceback to the vault **known-bug catalog** → fix in the host's
 ARC/RMG checkout → restart from the instance dir (ARC resumes from `restart.yml`); bounded **retry
@@ -82,9 +135,13 @@ budget (3)**, then mark `blocked`/`crashed` and **continue with the others** (on
 stalls the pool).
 
 - **Record fixes by scope — code stays UNSTAGED (never `git add`/`git commit`):**
-  - **Per-run fix** (one crash's diff in this campaign): leave the code edit **unstaged** in the
-    working tree and log it in a **per-project `FIXES.md`** (bug, root cause, diff/solution, files
-    touched, timestamp). Re-apply uncommitted code fixes after a fresh checkout.
+  - **Per-run fix** (one crash's diff in this campaign): **feel free to apply bug fixes directly to the
+    local ARC/RMG checkout** to unblock the pool — just **never commit/push them**. Leave every edit
+    **unstaged** and log it in a **per-project `FIXES.md`** with a fixed, reviewable schema so the user
+    can later inspect and decide what to commit: **timestamp · bug/symptom · root cause · files touched
+    · the fix (inline unified diff or a `git -C <repo> diff -- <file>` pointer) · which instance(s) it
+    unblocked.** Re-apply unstaged fixes after a fresh checkout. (The user reviews accumulated edits via
+    `git -C ~/Code/ARC diff` after several runs — keep `FIXES.md` the faithful index of that diff.)
   - **Validated, generalizable learning** (a genuinely new failure mode + fix, or a confirmed
     config/queue/LOT gotcha): **consolidate it into the vault** per the runbook — **merge and
     integrate into the relevant existing section, don't append duplicates; confirmed-only, never
@@ -101,6 +158,24 @@ whenever you park a problem rather than solve it — an **unconverged species**,
 what happened/what was tried · suggested human action · `arc.log`/job-dir pointer). At completion,
 finalize the **wins** summary (accepted k(T)/k∞/thermo) + counts. This is what the user works from
 afterward; keeping it current is **silent** (no Slack).
+
+## `REPORT.md` (per project) — the single clean human deliverable
+`STATUS.md`/`ISSUES.md`/`FIXES.md` are **working files**; `REPORT.md` is the **one thing the user
+reads** when a campaign finishes (or pauses). Generate/refresh it at any terminal state and on PAUSED.
+Keep it **minimal, skimmable, and informative** — fixed sections, newest decisive facts first, no
+process noise:
+- **Wins** — what converged and was **accepted** (k(T)/k∞/thermo) with the LOT, one line each.
+- **Didn't converge / blocked** — each unconverged species, TS-not-found, or `blocked`/`crashed`
+  instance with **why** (root cause in plain terms) and a **recommendation** (next LOT, adapter, manual
+  step), and a job-dir/`arc.log` pointer.
+- **Code fixes applied** — concise list mirroring `FIXES.md`, plus a `git -C ~/Code/ARC diff --stat`
+  (and RMG-Py if touched) snapshot so the user sees every accumulated unstaged edit at a glance before
+  deciding what to commit.
+- **Deviations** — any LOT/method changes (sibling folders) and their outcome.
+- **Next actions** — the short human punch-list distilled from `ISSUES.md`.
+
+The completion `slack-notify` (below) is a one-line pointer to this file; do not paste the report into
+Slack. Writing/refreshing `REPORT.md` is **silent** (no Slack of its own).
 
 ## Success criteria — scientific correctness is the bar
 Mark an instance `processed` only when the result exists **and** is scientifically sane (per the
@@ -132,19 +207,27 @@ re-launch every non-`processed` instance, re-run pre-flight.
 ## Slack policy — minimal, high-signal (every message means "needs me")
 Invoke the existing **`slack-ask`** / **`slack-notify`** skills (they post as the bot via
 `/home/alon/.claude/bin/cc-slack-post.py` to `#cc-comm`). Send Slack **only** in these cases:
-1. **Real blocker → `slack-ask`** (pause + wait): can't reach zeus, broken `~/.arc/settings.py`/
-   branches, a failure surviving the fix→restart budget, an ambiguous result you can't safely accept or
-   reject, or any infra loss that stalls the run. Record it in `STATUS.md` first, then ask; resume per
-   the reply.
-2. **Scientific deviation → `slack-ask`** (confirm first): a diagnosed LOT/method change or any
-   departure from the original input. Present diagnosis + recommendation; on approval, spawn the new
-   sibling-folder run keeping the original.
-3. **Campaign finished → `slack-notify`** (one summary): `processed`/`blocked` counts + where the
-   consolidated libraries are. With a shared pool, notify when the whole pool is terminal.
+1. **Real blocker** (zeus unreachable, broken `~/.arc/settings.py`/branches, a failure surviving the
+   fix→restart budget, near the zeus hard quota, an ambiguous result you can't safely accept or reject,
+   any infra loss that stalls the run). Record it in `STATUS.md` first. **Mode matters:**
+   - **Interactive (single session): `slack-ask`** (blocking) — pause + wait, resume per the reply.
+   - **Supervised (poll-loop): `slack-notify`** the blocker + **set state `PAUSED`** (do **not** block
+     on `slack-ask` — it would stall the one-pass timeout). The supervisor then waits for you to fix it
+     and flip state back to `RUNNING`; the next pass re-evaluates.
+2. **Scientific deviation → `slack-ask`** (confirm first; supervised → `slack-notify` + `PAUSED`): a
+   diagnosed LOT/method change or any departure from the original input. Present diagnosis +
+   recommendation; on approval, spawn the new sibling-folder run keeping the original.
+3. **Campaign finished → `slack-notify`** (one line): `processed`/`blocked` counts + a **pointer to
+   `REPORT.md`** and where the consolidated libraries are. With a shared pool, notify when the whole
+   pool is terminal. Do not paste the report body into Slack.
+4. **Long-run liveness → `slack-notify`** (at most **once/day**): for multi-day campaigns, a single
+   terse "still alive — N processed / M running / K blocked" so silence never means "stuck or dead."
+   Throttle to one per 24 h; skip if the pool finished or paused that day (those already notify).
 
-**Otherwise: no Slack.** Normal progress, routine auto-fixes, and per-pass heartbeats go to `STATUS.md`
-only — do not spam the channel.
+**Otherwise: no Slack.** Normal progress, routine auto-fixes, quota warnings below the threshold, and
+per-pass heartbeats go to `STATUS.md` only — do not spam the channel.
 
 ## Related
 Vault: `[[ARC Campaign Runbook]]` · `[[Running ARC On Zeus]]` · `ARC on OL — Zeus Troubleshooting`.
-Slack: `slack-ask`, `slack-notify`. Bundled: `arc_babysitter.sh` (supervisor poll-loop).
+Slack: `slack-ask`, `slack-notify`. Bundled: `arc_babysitter.sh` (supervisor poll-loop) ·
+`arc-babysitter.service` (reboot-resilient systemd user unit). Deliverable: per-project `REPORT.md`.
