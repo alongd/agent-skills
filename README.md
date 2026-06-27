@@ -83,6 +83,12 @@ If that marketplace isn't registered yet, add it first, then install:
 Verify with `/plugin` — you should see `superpowers` enabled. Full docs:
 <https://github.com/obra/superpowers>.
 
+### Optional extras
+
+- **[ui-ux-pro-max](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill)** — a UI/UX
+  design plugin (web & mobile). Only useful if you build UIs/dashboards; not needed for
+  research work. Install with `git clone https://github.com/nextlevelbuilder/ui-ux-pro-max-skill.git ~/.claude/skills/ui-ux-pro-max-skill`.
+
 ## What's in here
 
 | Group | Skills |
