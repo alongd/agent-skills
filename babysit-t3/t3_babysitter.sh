@@ -45,6 +45,7 @@ continues). Write nothing else to that file."
 echo "$(date '+%F %T') supervisor start (interval=${INTERVAL}s, timeout=${PASS_TIMEOUT})" >> "$LOG"
 while true; do
   echo "$(date '+%F %T') --- pass start ---" >> "$LOG"
+  echo RUNNING > "$STATE_FILE"  # reset ephemeral state so a crashed/timed-out pass never inherits a stale DONE/PAUSED (e.g. after a relaunch)
   timeout "$PASS_TIMEOUT" claude -p "$PASS_PROMPT" --dangerously-skip-permissions >> "$LOG" 2>&1
   rc=$?
   [ "$rc" -eq 124 ] && echo "$(date '+%F %T') pass TIMED OUT after ${PASS_TIMEOUT}" >> "$LOG"
