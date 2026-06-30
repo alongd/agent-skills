@@ -16,7 +16,7 @@ also asking.
 ## Config
 
 - **Channel**: `#cc-comm` → `channel_id` = `C0B993YLDPT` (stable across machines).
-- **Send helper**: `/home/alon/.claude/bin/cc-slack-post.py "<message>" [thread_ts]`
+- **Send helper**: `$HOME/.claude/bin/cc-slack-post.py "<message>" [thread_ts]`
   — posts as the bot (reads the bot token from `~/.claude/.slack-bot-token`),
   prints `OK` then the message `ts`. It's allowlisted in settings.json, so it
   runs without a permission prompt (unattended-safe). Do **not** use inline
@@ -35,7 +35,7 @@ also asking.
    helper via Bash (mind shell quoting; the message uses Slack mrkdwn —
    `*bold*`, `_italic_`, `` `code` ``, `\n` for newlines):
    ```bash
-   /home/alon/.claude/bin/cc-slack-post.py "❓ *<machine>* needs input — \`<task>\`
+   $HOME/.claude/bin/cc-slack-post.py "❓ *<machine>* needs input — \`<task>\`
    <cwd>
 
    <your question, with concrete options if it's a choice>
@@ -73,7 +73,7 @@ also asking.
 4. **Acknowledge and continue.** Post a short threaded confirmation by passing
    the root `ts` as the second arg, then use the answer to proceed:
    ```bash
-   /home/alon/.claude/bin/cc-slack-post.py "✅ Got it — continuing." "<ts>"
+   $HOME/.claude/bin/cc-slack-post.py "✅ Got it — continuing." "<ts>"
    ```
 
 ## Notes

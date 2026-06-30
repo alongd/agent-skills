@@ -80,7 +80,7 @@ The sender (`bin/cc-slack-post.py`) reads:
 ## Portability note
 
 The `slack-ask` / `slack-notify` skills and the allow-rule reference the absolute
-path `/home/alon/.claude/bin/cc-slack-post.py`. On a machine with a different home
+path `$HOME/.claude/bin/cc-slack-post.py`. On a machine with a different home
 (different username, or macOS `/Users/...`), update that path in:
 - `slack-ask/SKILL.md` and `slack-notify/SKILL.md`
 - the allow-rule in `~/.claude/settings.json`
